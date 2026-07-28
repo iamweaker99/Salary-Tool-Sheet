@@ -1,0 +1,13 @@
+# clasp auth file (contains tokens — NEVER commit)
+.clasprc.json*
+.clasprc.json
+
+# Project config (script ID — project-specific)
+.clasp.json
+
+# Node.js
+node_modules/
+
+# OS junk
+.DS_Store
+Thumbs.db
