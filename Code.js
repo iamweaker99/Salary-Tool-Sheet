@@ -18,7 +18,10 @@ const SS = SpreadsheetApp.getActiveSpreadsheet();
 const PROPERTIES = PropertiesService.getScriptProperties();
 
 /** Sheets that are never treated as employee tabs (also excluded from protection ops). */
-const RESERVED_SHEETS = ["CONFIG", "IN", "OUT", "MEETING", "_Template", "Test_Harness", "Sheet1"];
+const RESERVED_SHEETS = ["CONFIG", "IN", "OUT", "MEETING", "_Template", "Test_Harness", "Sheet1", "SUM"];
+const SUM_SHEET_NAME = "SUM";
+const SUM_CONTROLLED_RANGE = "A1:D43";
+const EMPLOYEE_SUM_RANGE = "I34:M34";
 
 /** CONFIG layout: A5:A44 = employee names (source of truth), B5:B44 = standard check-in times. */
 const CONFIG_NAMES_RANGE = "A5:A44";
@@ -54,13 +57,18 @@ function hello() {
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('Salary Tool')
-    .addItem('Sync Employee Tabs', 'syncEmployeeTabs')
+    .addItem('Sync Employee Tabs', 'syncEmployeeTabsFromMenu')
     .addItem('Reset Rest Overrides', 'resetRestOverrides')
     .addSeparator()
     .addItem('Protect All Tabs', 'protectAllTabs')
     .addItem('Unprotect All Tabs', 'unprotectAllTabs')
     .addToUi();
   drawButtonsIfNeeded();
+}
+
+/** Runs Sync from the menu and displays its result to the user. */
+function syncEmployeeTabsFromMenu() {
+  SpreadsheetApp.getUi().alert(syncEmployeeTabs());
 }
 
 /**
@@ -131,9 +139,22 @@ function syncEmployeeTabs() {
     employees.push({ name: namesValues[i], time: timeValues[i], flag: flagValues[i] });
   }
   if (employees.length === 0) {
+    const emptySumSheet = getOrCreateSumSheet();
+    rebuildSumDashboard(emptySumSheet, [], {}, {}, summary);
+    SS.getSheets()
+      .filter(sheet => !RESERVED_SHEETS.includes(sheet.getName()))
+      .forEach(sheet => sheet.getRange("M34").clearContent());
     return "SYNC: CONFIG has no employees — nothing to do.";
   }
   const employeeNames = employees.map(e => e.name);
+  const duplicateNames = findDuplicateNames(employeeNames);
+  if (duplicateNames.length > 0) {
+    return "SYNC ABORTED: duplicate employee name(s): " + duplicateNames.join(", ");
+  }
+  const reservedNames = employeeNames.filter(name => RESERVED_SHEETS.includes(name));
+  if (reservedNames.length > 0) {
+    return "SYNC ABORTED: reserved sheet name used as employee name: " + reservedNames.join(", ");
+  }
   summary.push("CONFIG employees: " + employeeNames.length);
   // MEETING attendance: only employees flagged "YES" (anything else — "NO", "-",
   // "" — is not a meeting participant), in CONFIG order.
@@ -148,24 +169,21 @@ function syncEmployeeTabs() {
   const allSheets = SS.getSheets();
   const sheetByName = {};
   allSheets.forEach(s => { sheetByName[s.getName()] = s; });
-  const orphanedTabs = allSheets.filter(s =>
-    !RESERVED_SHEETS.includes(s.getName()) && !employeeNames.includes(s.getName()));
-  if (orphanedTabs.length > 0) {
-    summary.push("Orphaned tabs (left alone): " + orphanedTabs.map(s => s.getName()).join(", "));
-  }
-
   const template = SS.getSheetByName("_Template");
   const inSheet = SS.getSheetByName("IN");
   const outSheet = SS.getSheetByName("OUT");
   if (!template || !inSheet || !outSheet) {
     return "SYNC ABORTED: _Template / IN / OUT sheet missing.";
   }
+  const sumSheet = getOrCreateSumSheet();
+  writeTemplateSummaryBlock(template);
 
   // 3. Rename detection (design scenario 7): exactly one pair to clear, exactly
   //    one new name, and an orphaned tab named after the cleared pair → treat as
   //    a rename: keep the IN/OUT data (under the new header) and rename the tab.
   const inPairs = readPairData(inSheet);
   const renameMap = {}; // newName -> oldName
+  const appliedRenameMap = {}; // newName -> oldName, only after tab rename succeeds
   const pendingClear = Object.keys(inPairs.pairs).filter(n => !employeeNames.includes(n));
   const newNames = employeeNames.filter(n => !inPairs.pairs[n]);
   if (pendingClear.length === 1 && newNames.length === 1 &&
@@ -178,32 +196,44 @@ function syncEmployeeTabs() {
   // 4. Ensure every employee has a tab.
   let created = 0;
   let updated = 0;
+  const employeeSheets = {};
+  const failedEmployees = {};
   employeeNames.forEach(name => {
-    let sheet = sheetByName[name];
-    if (!sheet && renameMap[name]) {
-      // Rename: reuse the old (orphaned) tab instead of creating a new one.
-      sheet = sheetByName[renameMap[name]];
-      sheet.setName(name);
-      sheetByName[name] = sheet;
-      delete sheetByName[renameMap[name]];
+    try {
+      let sheet = sheetByName[name];
+      if (!sheet && renameMap[name]) {
+        // Rename: reuse the old (orphaned) tab instead of creating a new one.
+        sheet = sheetByName[renameMap[name]];
+        sheet.setName(name);
+        appliedRenameMap[name] = renameMap[name];
+        sheetByName[name] = sheet;
+        delete sheetByName[renameMap[name]];
+      }
+      if (sheet) {
+        updated++;
+      } else {
+        sheet = template.copyTo(SS);
+        sheet.setName(name);
+        sheetByName[name] = sheet;
+        created++;
+      }
+      if (!setA1(sheet, name, summary)) {
+        throw new Error("could not write A1");
+      }
+      writeEmployeeSummaryBlock(sheet, employeeNames.indexOf(name) + 4, sumSheet);
+      employeeSheets[name] = sheet;
+    } catch (e) {
+      failedEmployees[name] = e.message;
+      summary.push("WARN: employee '" + name + "' setup failed: " + e.message);
     }
-    if (sheet) {
-      updated++;
-    } else {
-      sheet = template.copyTo(SS);
-      sheet.setName(name);
-      sheetByName[name] = sheet;
-      created++;
-    }
-    setA1(sheet, name, summary); // protection-aware (copies inherit _Template protection)
   });
   summary.push("Employee tabs — created: " + created + ", updated: " + updated);
 
   // 5. IN/OUT column management: read all pairs into memory, rewrite headers +
   //    data in CONFIG order (append / reorder / delete-clear in one pass), and
   //    apply per-column role properties. Columns are never deleted.
-  rewriteInOutLayout(inSheet, employeeNames, renameMap);
-  rewriteInOutLayout(outSheet, employeeNames, renameMap);
+  rewriteInOutLayout(inSheet, employeeNames, appliedRenameMap);
+  rewriteInOutLayout(outSheet, employeeNames, appliedRenameMap);
   summary.push("IN/OUT columns rewritten in CONFIG order (" + employeeNames.length + " pairs)");
 
   // 6. MEETING attendance layout: single-column rewrite in flag=YES order (same
@@ -211,13 +241,27 @@ function syncEmployeeTabs() {
   //    inherits attendance via renameMap), dropdowns applied to every position.
   const meetingSheet = SS.getSheetByName("MEETING");
   if (meetingSheet) {
-    rewriteMeetingLayout(meetingSheet, meetingNames, renameMap);
+    rewriteMeetingLayout(meetingSheet, meetingNames, appliedRenameMap);
     summary.push("MEETING columns rewritten (" + meetingNames.length + " attendance columns)");
   } else {
     summary.push("WARN: MEETING sheet not found — attendance sync skipped.");
   }
 
   // 7. Force formula recalc — REQUIRED: formulas that referenced a sheet/column
+  const currentOrphans = SS.getSheets().filter(s =>
+    !RESERVED_SHEETS.includes(s.getName()) && !employeeNames.includes(s.getName()));
+  if (currentOrphans.length > 0) {
+    summary.push("Orphaned tabs (left alone): " + currentOrphans.map(s => s.getName()).join(", "));
+  }
+  currentOrphans.forEach(sheet => {
+    try {
+      sheet.getRange("M34").clearContent();
+    } catch (e) {
+      summary.push("WARN: could not clear orphan backlink on '" + sheet.getName() + "': " + e.message);
+    }
+  });
+  rebuildSumDashboard(sumSheet, employees, employeeSheets, failedEmployees, summary);
+
   //    that didn't exist at write time cache #REF! permanently otherwise.
   const recalcSkipped = forceFormulaRecalc();
   if (recalcSkipped.length > 0) {
@@ -226,6 +270,106 @@ function syncEmployeeTabs() {
 
   summary.push("Sync complete.");
   return "SYNC OK\n" + summary.join("\n");
+}
+
+/** Returns duplicate non-blank names while preserving their first-seen order. */
+function findDuplicateNames(names) {
+  const seen = new Set();
+  const duplicates = [];
+  names.forEach(name => {
+    if (seen.has(name)) {
+      if (!duplicates.includes(name)) duplicates.push(name);
+    } else {
+      seen.add(name);
+    }
+  });
+  return duplicates;
+}
+
+/** Ensures the generated SUM sheet exists and has the controlled-range capacity. */
+function getOrCreateSumSheet() {
+  const sheet = SS.getSheetByName(SUM_SHEET_NAME) || SS.insertSheet(SUM_SHEET_NAME);
+  if (sheet.getMaxRows() < 43) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), 43 - sheet.getMaxRows());
+  }
+  if (sheet.getMaxColumns() < 4) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), 4 - sheet.getMaxColumns());
+  }
+  return sheet;
+}
+
+/** Writes the static summary formulas copied to newly created employee tabs. */
+function writeTemplateSummaryBlock(template) {
+  template.getRange("I34").setValue("SUM");
+  template.getRange("J34:L34").setFormulas([["=SUM(J2:J32)", "=SUM(K2:K32)", "=SUM(L2:L32)"]]);
+  template.getRange("J34:L34").setNumberFormat("[h]:mm");
+  template.getRange("M34").clearContent();
+}
+
+/** Rewrites one active employee's complete canonical summary block. */
+function writeEmployeeSummaryBlock(sheet, dashboardRow, sumSheet) {
+  sheet.getRange(EMPLOYEE_SUM_RANGE).clearContent();
+  sheet.getRange("I34").setValue("SUM");
+  sheet.getRange("J34:L34").setFormulas([["=SUM(J2:J32)", "=SUM(K2:K32)", "=SUM(L2:L32)"]]);
+  sheet.getRange("J34:L34").setNumberFormat("[h]:mm");
+  sheet.getRange("M34").setFormula(
+    '=HYPERLINK("#gid=' + sumSheet.getSheetId() + '&range=A' + dashboardRow + ':D' + dashboardRow + '","SUM dashboard")'
+  );
+}
+
+/** Rebuilds only the generated SUM dashboard area. */
+function rebuildSumDashboard(sumSheet, employees, employeeSheets, failedEmployees, summary) {
+  sumSheet.getRange(SUM_CONTROLLED_RANGE).clear();
+  sumSheet.getRange("A1:D1").setValues([["Month", "", "Year", ""]]);
+  sumSheet.getRange("B1").setFormula("=CONFIG!E5");
+  sumSheet.getRange("D1").setFormula("=CONFIG!F5");
+  sumSheet.getRange("A3:D3").setValues([[
+    "Employee", "Normal Working Hours", "Overtime", "Overday"
+  ]]);
+
+  const rows = employees.map((employee, index) => {
+    const row = index + 4;
+    const sheet = employeeSheets[employee.name];
+    if (!sheet || failedEmployees[employee.name]) {
+      return ["=" + quoteFormulaString(employee.name), "", "", ""];
+    }
+    const sheetRef = quoteSheetNameForFormula(sheet.getName());
+    return [
+      '=HYPERLINK("#gid=' + sheet.getSheetId() + '&range=B9:B36","' + escapeFormulaString(employee.name) + '")',
+      "=" + sheetRef + "!J34",
+      "=" + sheetRef + "!K34",
+      "=" + sheetRef + "!L34"
+    ];
+  });
+  if (rows.length > 0) {
+    sumSheet.getRange(4, 1, rows.length, 4).setFormulas(rows);
+  }
+
+  sumSheet.getRange("A1:D1").setFontWeight("bold");
+  sumSheet.getRange("A3:D3").setFontWeight("bold");
+  sumSheet.getRange("B4:D43").setNumberFormat("[h]:mm");
+  sumSheet.setColumnWidth(1, 180);
+  sumSheet.setColumnWidth(2, 170);
+  sumSheet.setColumnWidth(3, 120);
+  sumSheet.setColumnWidth(4, 120);
+  Object.keys(failedEmployees).forEach(name => {
+    summary.push("WARN: SUM row for '" + name + "' left blank: " + failedEmployees[name]);
+  });
+}
+
+/** Quotes a sheet name for a direct Google Sheets formula reference. */
+function quoteSheetNameForFormula(name) {
+  return "'" + String(name).replace(/'/g, "''") + "'";
+}
+
+/** Escapes a string embedded in a Google Sheets double-quoted formula literal. */
+function escapeFormulaString(value) {
+  return String(value).replace(/"/g, '""');
+}
+
+/** Quotes a text value as a Google Sheets formula literal. */
+function quoteFormulaString(value) {
+  return '"' + escapeFormulaString(value) + '"';
 }
 
 /**
@@ -316,7 +460,12 @@ function rewriteInOutLayout(sheet, employeeNames, renameMap) {
       matrix[r][c] = pair ? pair.cb[r - 1] : "";
     }
   });
-  sheet.getRange(1, 2, DATA_LAST_ROW, maxCols - 1).setValues(matrix);
+  const rewriteRange = sheet.getRange(1, 2, DATA_LAST_ROW, maxCols - 1);
+  // Clear stale strict validation before writing preserved legacy values. The
+  // old rule can reject boolean values that are being migrated to the
+  // canonical 0h/1h control-column rule below.
+  rewriteRange.setDataValidation(null);
+  rewriteRange.setValues(matrix);
   // Column Role Properties on EVERY pair position, not just employee ones: time
   // cols = HH:MM + cleared validation, checkbox cols = strict BOOLEAN only —
   // NO number format (Fix A, 2026-08-01: the old "@" TEXT format coerced boolean
@@ -439,6 +588,7 @@ function applyMeetingAttendanceValidation(sheet, col) {
 function setA1(sheet, name, summary) {
   try {
     sheet.getRange("A1").setValue(name);
+    return true;
   } catch (e) {
     try {
       const protections = sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE)
@@ -448,8 +598,10 @@ function setA1(sheet, name, summary) {
       protections.forEach(p => p.remove());
       sheet.getRange("A1").setValue(name);
       configs.forEach(cfg => restoreProtection(sheet, cfg));
+      return true;
     } catch (e2) {
       summary.push("WARN: could not write A1 on '" + sheet.getName() + "': " + e2.message);
+      return false;
     }
   }
 }
@@ -545,7 +697,7 @@ function unprotectAllTabs() {
 function forceFormulaRecalc() {
   const skipped = [];
   SS.getSheets()
-    .filter(sheet => !RESERVED_SHEETS.includes(sheet.getName()))
+    .filter(sheet => !RESERVED_SHEETS.includes(sheet.getName()) || sheet.getName() === SUM_SHEET_NAME)
     .forEach(sheet => {
       try {
         const maxRows = sheet.getMaxRows();
@@ -555,20 +707,17 @@ function forceFormulaRecalc() {
         // IMPORTANT: full-grid setFormulas(getFormulas()) would CLEAR non-formula
         // cells (getFormulas() returns "" for them) — observed 2026-08-01: it wiped
         // A1 employee names; it would also wipe user-entered B-column dates.
-        let minR = maxRows, maxR = 0, minC = maxCols, maxC = 0;
         for (let r = 0; r < maxRows; r++) {
-          for (let c = 0; c < maxCols; c++) {
-            if (formulas[r][c] !== "") {
-              if (r < minR) minR = r;
-              if (r > maxR) maxR = r;
-              if (c < minC) minC = c;
-              if (c > maxC) maxC = c;
-            }
+          let start = 0;
+          while (start < maxCols) {
+            while (start < maxCols && formulas[r][start] === "") start++;
+            if (start >= maxCols) break;
+            let end = start;
+            while (end + 1 < maxCols && formulas[r][end + 1] !== "") end++;
+            const run = sheet.getRange(r + 1, start + 1, 1, end - start + 1);
+            run.setFormulas([formulas[r].slice(start, end + 1)]);
+            start = end + 1;
           }
-        }
-        if (maxR >= minR) {
-          const box = sheet.getRange(minR + 1, minC + 1, maxR - minR + 1, maxC - minC + 1);
-          box.setFormulas(box.getFormulas());
         }
       } catch (e) {
         skipped.push(sheet.getName());
