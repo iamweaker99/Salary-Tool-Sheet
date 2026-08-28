@@ -232,8 +232,8 @@ function syncEmployeeTabs() {
   // 5. IN/OUT column management: read all pairs into memory, rewrite headers +
   //    data in CONFIG order (append / reorder / delete-clear in one pass), and
   //    apply per-column role properties. Columns are never deleted.
-  rewriteInOutLayout(inSheet, employeeNames, appliedRenameMap);
-  rewriteInOutLayout(outSheet, employeeNames, appliedRenameMap);
+  rewriteInOutLayout(inSheet, employeeNames, appliedRenameMap, "IN");
+  rewriteInOutLayout(outSheet, employeeNames, appliedRenameMap, "OUT");
   summary.push("IN/OUT columns rewritten in CONFIG order (" + employeeNames.length + " pairs)");
 
   // 6. MEETING attendance layout: single-column rewrite in flag=YES order (same
@@ -400,7 +400,7 @@ function resetRestOverrides() {
 
 /**
  * Reads an IN/OUT sheet's column pairs into memory. Each pair = time column
- * (header = employee name) + adjacent checkbox column (blank header).
+ * (header = employee name) + adjacent control column (blank header).
  * Returns { pairs: {name: {time: [31], cb: [31]}}, order: [...] }.
  */
 function readPairData(sheet) {
@@ -431,50 +431,49 @@ function readPairData(sheet) {
  *    Renamed employees inherit their old pair's data via renameMap.
  * 3. Apply the "Column Role Properties" rule to every assigned pair:
  *    time col = TIME HH:MM format + cleared validation;
- *    rest-control col = strict 0h/1h validation + no TIME format.
- *    (Validation is a cell property that survives value clearing — stale rules
- *    from former checkbox columns would reject time entry, and grid-expansion
- *    the rest-control model remains blank/0h/1h. See design doc.)
+ *    IN control col = checkbox validation; OUT control col = strict 0h/1h
+ *    validation. Both control policies apply to active and future-capacity pairs.
+ *    IN control values that are neither booleans nor blank are cleared while
+ *    constructing the matrix; time values and OUT values are preserved.
  */
-function rewriteInOutLayout(sheet, employeeNames, renameMap) {
+function rewriteInOutLayout(sheet, employeeNames, renameMap, role) {
   const maxCols = sheet.getMaxColumns();
   const pairCount = Math.floor((maxCols - 1) / 2); // full pairs from B (82 cols -> 40)
   const existing = readPairData(sheet);
   const matrix = Array.from({ length: DATA_LAST_ROW }, () => Array(maxCols - 1).fill(""));
-  // Existing rest-control values are preserved; new positions remain blank.
-  // Legacy invalid values remain visible until the explicit reset action.
-  // applied below makes the engine throw "violates the data validation rules"
-  // on any non-boolean when pending writes are flushed (observed 2026-08-01 —
-  // the old "@" TEXT format coerced boolean writes to "false" strings, and the
-  // violation surfaced at the next run's read). FALSE = unchecked = same
-  // semantics as empty.
+  // Existing control values are preserved for OUT; new positions remain blank.
+  // IN accepts only booleans and blanks, so legacy literals such as "0h" and
+  // "1h" are cleared here rather than reinterpreted as boolean states.
   employeeNames.forEach((name, n) => {
     const t = n * 2;                 // 0-based pair position within the B-relative zone
     const c = n * 2 + 1;
     const oldName = renameMap[name]; // data to inherit on rename
     const pair = existing.pairs[name] || (oldName && existing.pairs[oldName]);
     matrix[0][t] = name;             // time column header
-    // matrix[0][c] stays ""          // rest-control column header stays blank
+    // matrix[0][c] stays ""          // control column header stays blank
     for (let r = 1; r < DATA_LAST_ROW; r++) {
       matrix[r][t] = pair ? pair.time[r - 1] : "";
-      matrix[r][c] = pair ? pair.cb[r - 1] : "";
+      const controlValue = pair ? pair.cb[r - 1] : "";
+      matrix[r][c] = role === "IN" && controlValue !== "" && controlValue !== null &&
+        typeof controlValue !== "boolean" ? "" : controlValue;
     }
   });
   const rewriteRange = sheet.getRange(1, 2, DATA_LAST_ROW, maxCols - 1);
-  // Clear stale strict validation before writing preserved legacy values. The
-  // old rule can reject boolean values that are being migrated to the
-  // canonical 0h/1h control-column rule below.
+  // Clear stale validation before writing preserved values. Role-specific
+  // validation is reapplied below.
   rewriteRange.setDataValidation(null);
   rewriteRange.setValues(matrix);
   // Column Role Properties on EVERY pair position, not just employee ones: time
-  // cols = HH:MM + cleared validation, checkbox cols = strict BOOLEAN only —
-  // NO number format (Fix A, 2026-08-01: the old "@" TEXT format coerced boolean
-  // writes to "false" strings — Bug 4 root cause).
+  // cols = HH:MM + cleared validation; control cols use the selected role policy.
   // This also kills stale spill validation in vacated/capacity positions
   // (validation is a cell property that survives value clearing).
   for (let n = 0; n < pairCount; n++) {
     applyTimeColumnProperties(sheet, 2 + n * 2);     // 1-based time column
-    applyRestOverrideColumnProperties(sheet, 3 + n * 2); // 1-based control column
+    if (role === "IN") {
+      applyCheckboxColumnProperties(sheet, 3 + n * 2); // 1-based control column
+    } else {
+      applyRestOverrideColumnProperties(sheet, 3 + n * 2); // 1-based control column
+    }
   }
 }
 
@@ -486,13 +485,20 @@ function applyTimeColumnProperties(sheet, col) {
   sheet.getRange(1, col).setDataValidation(null); // header too (spill belt-and-braces)
 }
 
+/** IN control column (rows 2-32): checked, unchecked, or blank checkbox state. */
+function applyCheckboxColumnProperties(sheet, col) {
+  const data = sheet.getRange(2, col, DATA_LAST_ROW - 1, 1);
+  const checkbox = SpreadsheetApp.newDataValidation()
+    .requireCheckbox()
+    .setAllowInvalid(false)
+    .build();
+  data.setDataValidation(checkbox);
+  sheet.getRange(1, col).setDataValidation(null);
+}
+
 /**
- * Rest-control column (rows 2-32): strict 0h/1h validation; blank means Auto.
+ * OUT control column (rows 2-32): strict 0h/1h validation; blank means Auto.
  * Deliberately no number format is applied.
- * Sheets coerce the sync's boolean writes to the STRING "false", which then
- * violated the strict BOOLEAN validation when pending writes were flushed at the
- * next run's read ("cell C2 violates..." — Bug 4 root cause, 2026-08-01). With
- * no number format is applied.
  */
 function applyRestOverrideColumnProperties(sheet, col) {
   const data = sheet.getRange(2, col, DATA_LAST_ROW - 1, 1);
