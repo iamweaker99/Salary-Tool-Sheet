@@ -579,7 +579,7 @@ function rewriteMeetingLayout(sheet, meetingNames, renameMap) {
 function applyMeetingAttendanceValidation(sheet, col) {
   const data = sheet.getRange(2, col, DATA_LAST_ROW - 1, 1);
   const attendance = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['✓', '✗', 'MC', 'PH'], true)
+    .requireValueInList(['✓', '✗', 'OS', 'MC', 'PH'], true)
     .setAllowInvalid(false)
     .build();
   data.setDataValidation(attendance);

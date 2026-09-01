@@ -9,8 +9,8 @@ Use it only for employees whose `Need Meeting ?` flag in `CONFIG` is `YES`.
 Employees with `NO`, `-`, or a blank flag are not included in the active
 MEETING layout.
 
-Be aware that the Early Start checkbox column at `IN` will not be working for 
-individual with `Need Meeting ?` flag as `Yes` in the `CONFIG`
+For meeting employees, `OS` means Out Station. It does not automatically enable Early Start. To count an early check-in, also check Early Start in `IN`.
+Only the `OS` status allows that checkbox to affect the calculation; all other meeting statuses ignore it.
 
 ## Where
 
@@ -21,11 +21,14 @@ individual with `Need Meeting ?` flag as `Yes` in the `CONFIG`
 
 ## How
 
+The dropdown values are Attend (check mark), Not attend (cross mark), `OS`,`MC`, and `PH`.
+
 1. In `CONFIG`, set the employee's `Need Meeting ?` flag to `YES`.
 2. Select **Salary Tool → Sync Employee Tabs**.
 3. On `MEETING`, choose one of the dropdown values for each applicable day:
    - `✓` — attended
    - `✗` — did not attend
+   - `OS` — out station (still counted as attended)
    - `MC` — medical leave
    - `PH` — public holiday
 4. Leave the cell blank when no meeting status should be recorded.
