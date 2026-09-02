@@ -1,5 +1,14 @@
 # Google Sheet Project
 
+## Standing update rules
+
+1. **Phase gates:** Work phase by phase; stop, report completion, and wait for approval before the next phase.
+2. **Very wrong scenarios:** Stop and discuss if no solution is available or a solution would materially broaden the requested change (about 20%+).
+3. **Tool split:** Discover and use installed tools first: `gws` for live Sheet data, `clasp` for Apps Script deployment, and signed-in Edge computer use for UI buttons/verification when service-account access is insufficient.
+4. **Access reality:** The service account has limited live-Sheet access; do not assume it can perform every action. Use the signed-in browser as the fallback.
+5. **Live tests:** Record original values, use small controlled test rows, restore every temporary change, and ask the user only when a safe row or manual result genuinely requires input. 
+6. **Handoff:** Use `/handoff` or `$handoff` only when explicitly requested, and save the handoff outside the workspace.
+
 ## The Two CLI Tools
 
 This project uses **two complementary CLI tools** for Google Sheets automation:
@@ -18,7 +27,7 @@ This project uses **two complementary CLI tools** for Google Sheets automation:
 ### 2. `gws` — Live Sheet data read/write
 - **What it does**: Reads/writes cell values, ranges, and appends rows directly to the Sheet from the CLI — no browser needed
 - **Auth**: Uses a service account via `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE`
-- **Credentials file**: `D:\Claude_Code\Google_Sheet_Credentials\credentials.json`
+- **Credentials file**: `C:\Github Repo\Salary-Tool-Sheet\gws_credentials.json`
 - **Sheet ID**: `19paXVwMO2vtKxL0LQw64jLRPXPmYAS2_qoJQ5yM6ek8`
 - **Key commands**:
   - `gws sheets spreadsheets values get` — read a range
@@ -40,3 +49,4 @@ This project uses **two complementary CLI tools** for Google Sheets automation:
 ## Enabling APIs (if needed)
 - Drive API: `https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=922207163069`
 - Sheets API: Already enabled
+- App Script API: `AIzaSyAFOppy_cXZ2TtDNWzbn9RFNr2JSb4Q720`

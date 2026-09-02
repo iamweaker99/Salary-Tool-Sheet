@@ -14,3 +14,5 @@ Thumbs.db
 
 # context files
 KEEP_LOCAL/
+gws_credentials.json
+client_secret (OAuth).json

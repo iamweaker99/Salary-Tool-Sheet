@@ -235,6 +235,10 @@ function syncEmployeeTabs() {
   rewriteInOutLayout(inSheet, employeeNames, appliedRenameMap, "IN");
   rewriteInOutLayout(outSheet, employeeNames, appliedRenameMap, "OUT");
   summary.push("IN/OUT columns rewritten in CONFIG order (" + employeeNames.length + " pairs)");
+  const inOutMismatches = findInOutMismatches(inSheet, outSheet, employeeNames);
+  if (inOutMismatches.length > 0) {
+    summary.push("WARN: IN/OUT mismatches in column(s): " + inOutMismatches.join(", "));
+  }
 
   // 6. MEETING attendance layout: single-column rewrite in flag=YES order (same
   //    non-destructive semantics — vacated columns cleared, columns kept; rename
@@ -420,6 +424,30 @@ function readPairData(sheet) {
     }
   }
   return { pairs, order };
+}
+
+/** Returns employee names with an incomplete or mixed IN/OUT attendance pair. */
+function findInOutMismatches(inSheet, outSheet, employeeNames) {
+  const inPairs = readPairData(inSheet).pairs;
+  const outPairs = readPairData(outSheet).pairs;
+  return employeeNames.filter(name => {
+    const inTimes = inPairs[name].time;
+    const outTimes = outPairs[name].time;
+    return inTimes.some((inValue, index) => {
+      const outValue = outTimes[index];
+      const inBlank = inValue === "" || inValue === null;
+      const outBlank = outValue === "" || outValue === null;
+      if (inBlank || outBlank) return inBlank !== outBlank;
+      const inX = isZeroWorkMarker(inValue);
+      const outX = isZeroWorkMarker(outValue);
+      return inX !== outX;
+    });
+  });
+}
+
+/** Recognizes the case-insensitive, whitespace-tolerant X marker. */
+function isZeroWorkMarker(value) {
+  return typeof value === "string" && value.trim().toLowerCase() === "x";
 }
 
 /**
