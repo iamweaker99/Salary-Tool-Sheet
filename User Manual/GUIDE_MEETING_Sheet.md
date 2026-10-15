@@ -9,8 +9,9 @@ Use it only for employees whose `Need Meeting ?` flag in `CONFIG` is `YES`.
 Employees with `NO`, `-`, or a blank flag are not included in the active
 MEETING layout.
 
-For meeting employees, `OS` means Out Station. It does not automatically enable Early Start. To count an early check-in, also check Early Start in `IN`.
-Only the `OS` status allows that checkbox to affect the calculation; all other meeting statuses ignore it.
+For meeting employees, `OS` means Out Station and automatically enables Early Start, whether or not the `IN` checkbox is checked. Other meeting statuses leave Early Start off even when that box is checked.
+
+When Early Start is on, that day's check-in time is highlighted in Blue 11 (`#46bdc6`) in both `IN` and the employee sheet's `Check-in` column. The highlight clears when Early Start is off.
 
 ## Where
 

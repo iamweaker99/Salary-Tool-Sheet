@@ -58,7 +58,7 @@ function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('Salary Tool')
     .addItem('Sync Employee Tabs', 'syncEmployeeTabsFromMenu')
-    .addItem('Reset Rest Overrides', 'resetRestOverrides')
+    .addItem('Reset Manual Changes', 'resetManualChangesFromMenu')
     .addSeparator()
     .addItem('Protect All Tabs', 'protectAllTabs')
     .addItem('Unprotect All Tabs', 'unprotectAllTabs')
@@ -376,15 +376,27 @@ function quoteFormulaString(value) {
   return '"' + escapeFormulaString(value) + '"';
 }
 
-/**
- * Clears only current employee rest-control cells in OUT, returning them to
- * blank/Auto. The alternating checkout/control layout is preserved.
- */
+/** Runs the combined reset from the menu and displays its result. */
+function resetManualChangesFromMenu() {
+  SpreadsheetApp.getUi().alert(resetManualChanges());
+}
+
+/** Preserves existing drawing/script assignments to the original reset action. */
 function resetRestOverrides() {
+  return resetManualChanges();
+}
+
+/**
+ * Resets direct colours below headers on IN, OUT, and CONFIG employee tabs.
+ * Clears active OUT rest overrides and unticks literal IN/OUT checkboxes only.
+ * Formulas, conditional formatting, other styling, and protections are kept.
+ */
+function resetManualChanges() {
   const config = SS.getSheetByName("CONFIG");
+  const inSheet = SS.getSheetByName("IN");
   const out = SS.getSheetByName("OUT");
-  if (!config || !out) {
-    return "RESET ABORTED: CONFIG / OUT sheet missing.";
+  if (!config || !inSheet || !out) {
+    throw new Error("RESET ABORTED: CONFIG / IN / OUT sheet missing.");
   }
 
   const employeeNames = config.getRange(CONFIG_NAMES_RANGE).getValues()
@@ -392,14 +404,75 @@ function resetRestOverrides() {
     .filter(name => name !== "");
   const pairCapacity = Math.floor((out.getMaxColumns() - 1) / 2);
   if (employeeNames.length > pairCapacity) {
-    return "RESET ABORTED: OUT does not have enough employee control columns.";
+    throw new Error("RESET ABORTED: OUT does not have enough employee control columns.");
   }
 
+  const employeeSheets = employeeNames.map(name => {
+    const sheet = SS.getSheetByName(name);
+    if (!sheet || RESERVED_SHEETS.includes(name)) {
+      throw new Error("RESET ABORTED: invalid employee sheet '" + name + "'.");
+    }
+    return sheet;
+  });
+  const colourRanges = [inSheet, out].concat(employeeSheets).map(sheet =>
+    sheet.getRange(2, 1, sheet.getMaxRows() - 1, sheet.getMaxColumns()));
+  // Check all target permissions before clearing any inputs or colours.
+  colourRanges.forEach(range => {
+    if (!range.canEdit()) {
+      throw new Error("RESET ABORTED: cannot edit all target cells on '" +
+        range.getSheet().getName() + "'. No changes made.");
+    }
+  });
+
+  const checkboxRanges = [inSheet, out].map(sheet => {
+    const daily = sheet.getRange(2, 2, DATA_LAST_ROW - 1, sheet.getMaxColumns() - 1);
+    const formulas = daily.getFormulas();
+    const validations = daily.getDataValidations();
+    const cells = [];
+    // Group adjacent checkbox cells so RangeList does not issue per-cell writes.
+    for (let c = 0; c < daily.getNumColumns(); c++) {
+      let start = -1;
+      for (let r = 0; r <= validations.length; r++) {
+        const validation = r < validations.length ? validations[r][c] : null;
+        const manual = validation &&
+          validation.getCriteriaType() === SpreadsheetApp.DataValidationCriteria.CHECKBOX &&
+          formulas[r][c] === "";
+        if (manual && start === -1) start = r;
+        if (!manual && start !== -1) {
+          cells.push(daily.getCell(start + 1, c + 1).getA1Notation() + ":" +
+            daily.getCell(r, c + 1).getA1Notation());
+          start = -1;
+        }
+      }
+    }
+    return { sheet, cells };
+  });
+
+  const restCells = [];
   employeeNames.forEach((name, index) => {
     const controlColumn = 3 + index * 2; // C, E, ..., alternating after checkout
-    out.getRange(2, controlColumn, DATA_LAST_ROW - 1, 1).clearContent();
+    const controls = out.getRange(2, controlColumn, DATA_LAST_ROW - 1, 1);
+    const formulas = controls.getFormulas();
+    if (formulas.every(row => row[0] === "")) {
+      restCells.push(controls.getA1Notation());
+    } else {
+      formulas.forEach((row, r) => {
+        if (row[0] === "") restCells.push(controls.getCell(r + 1, 1).getA1Notation());
+      });
+    }
   });
-  return "RESET OK: " + employeeNames.length + " rest-control column(s) cleared.";
+  if (restCells.length > 0) out.getRangeList(restCells).clearContent();
+  colourRanges.forEach(range => {
+    range.setFontColor(null);
+    range.setBackground(null);
+  });
+  checkboxRanges.forEach(({ sheet, cells }) => {
+    if (cells.length > 0) sheet.getRangeList(cells).uncheck();
+  });
+  SpreadsheetApp.flush();
+  return "RESET OK: manual colours reset on " + colourRanges.length +
+    " sheet(s), manual IN/OUT checkboxes unticked, and " + employeeNames.length +
+    " rest-control column(s) cleared.";
 }
 
 /**

@@ -9,6 +9,10 @@
 5. **Live tests:** Record original values, use small controlled test rows, restore every temporary change, and ask the user only when a safe row or manual result genuinely requires input. 
 6. **Handoff:** Use `/handoff` or `$handoff` only when explicitly requested, and save the handoff outside the workspace.
 
+## CLI escalation fallback
+
+Use ordinary `gws` and `clasp` execution first. If an operation fails because of sandbox networking, proxy, or certificate compatibility, retry that same operation through approved escalation. The user grants standing consent for this fallback within the authorized task. Keep TLS verification enabled. Authentication failures, API permission denials, and invalid commands require diagnosis rather than automatic escalation. Escalation does not expand authorization for Sheet writes, script execution, or deployment. If approval review rejects the retry, stop and report the reason.
+
 ## The Two CLI Tools
 
 This project uses **two complementary CLI tools** for Google Sheets automation:
