@@ -28,6 +28,8 @@ const CONFIG_NAMES_RANGE = "A5:A44";
 const CONFIG_TIMES_RANGE = "B5:B44";
 /** CONFIG C5:C44 = "Need Meeting ?" flags — "YES" marks a meeting-required employee. */
 const CONFIG_FLAGS_RANGE = "C5:C44";
+/** CONFIG K6:K26 = Office Employee Setup names. */
+const OFFICE_EMPLOYEE_NAMES_RANGE = "K6:K26";
 
 /**
  * MEETING layout: row 1 = employee headers, rows 2-32 = attendance cells
@@ -59,6 +61,7 @@ function onOpen() {
   ui.createMenu('Salary Tool')
     .addItem('Sync Employee Tabs', 'syncEmployeeTabsFromMenu')
     .addItem('Reset Manual Changes', 'resetManualChangesFromMenu')
+    .addItem('Reset Manual Changes (Office)', 'resetOfficeManualChangesFromMenu')
     .addSeparator()
     .addItem('Protect All Tabs', 'protectAllTabs')
     .addItem('Unprotect All Tabs', 'unprotectAllTabs')
@@ -381,6 +384,11 @@ function resetManualChangesFromMenu() {
   SpreadsheetApp.getUi().alert(resetManualChanges());
 }
 
+/** Runs the office reset from the menu and displays its result. */
+function resetOfficeManualChangesFromMenu() {
+  SpreadsheetApp.getUi().alert(resetOfficeManualChanges());
+}
+
 /** Preserves existing drawing/script assignments to the original reset action. */
 function resetRestOverrides() {
   return resetManualChanges();
@@ -492,6 +500,72 @@ function resetManualChanges() {
   return "RESET OK: manual colours reset on " + colourRanges.length +
     " sheet(s), manual IN/OUT checkboxes unticked, and " + employeeNames.length +
     " rest-control column(s) cleared" + (meetingReset ? ", MEETING attendance reset." : ".");
+}
+
+/**
+ * Resets direct colours on Office Employee Setup tabs and clears manual entries
+ * in the office input ranges. Formula cells, conditional formatting, data
+ * validation, and sheet protections are preserved.
+ */
+function resetOfficeManualChanges() {
+  const config = SS.getSheetByName("CONFIG");
+  if (!config) {
+    throw new Error("OFFICE RESET ABORTED: CONFIG sheet not found.");
+  }
+
+  const employeeNames = [...new Set(config.getRange(OFFICE_EMPLOYEE_NAMES_RANGE).getValues()
+    .map(row => String(row[0]).trim())
+    .filter(name => name !== ""))];
+  const sheets = [];
+  const missingNames = [];
+  employeeNames.forEach(name => {
+    const sheet = SS.getSheetByName(name);
+    if (sheet) {
+      sheets.push(sheet);
+    } else {
+      missingNames.push(name);
+    }
+  });
+
+  // Prepare every target before making changes, so permission failures do not
+  // leave some office tabs reset and others untouched.
+  const resetPlans = sheets.map(sheet => {
+    const wholeSheet = sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns());
+    if (!wholeSheet.canEdit()) {
+      throw new Error("OFFICE RESET ABORTED: cannot edit the whole sheet '" +
+        sheet.getName() + "'. No changes made.");
+    }
+
+    const manualEntryCells = [];
+    ["B2:G32", "M2:M32"].forEach(a1Notation => {
+      const range = sheet.getRange(a1Notation);
+      const values = range.getValues();
+      const formulas = range.getFormulas();
+      for (let row = 0; row < values.length; row++) {
+        for (let col = 0; col < values[row].length; col++) {
+          if (formulas[row][col] === "" && values[row][col] !== "" && values[row][col] !== null) {
+            manualEntryCells.push(range.getCell(row + 1, col + 1).getA1Notation());
+          }
+        }
+      }
+    });
+    return { sheet, wholeSheet, manualEntryCells };
+  });
+
+  resetPlans.forEach(({ sheet, wholeSheet, manualEntryCells }) => {
+    wholeSheet.setFontColor(null);
+    wholeSheet.setBackground(null);
+    if (manualEntryCells.length > 0) {
+      sheet.getRangeList(manualEntryCells).clearContent();
+    }
+  });
+
+  SpreadsheetApp.flush();
+  const missingSummary = missingNames.length > 0
+    ? " Missing sheets: " + missingNames.join(", ") + "."
+    : "";
+  return "OFFICE RESET OK: direct colours reset on " + sheets.length +
+    " office sheet(s); manual entries cleared from B2:G32 and M2:M32." + missingSummary;
 }
 
 /**
