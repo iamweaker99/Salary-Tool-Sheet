@@ -27,11 +27,11 @@ The dropdown values are Attend (check mark), Not attend (cross mark), `OS`,`MC`,
 1. In `CONFIG`, set the employee's `Need Meeting ?` flag to `YES`.
 2. Select **Salary Tool → Sync Employee Tabs**.
 3. On `MEETING`, choose one of the dropdown values for each applicable day:
-   - `✓` — attended
-   - `✗` — did not attend
-   - `OS` — out station (still counted as attended)
-   - `MC` — medical leave
-   - `PH` — public holiday
+   - `✓` — attended (`#d4edbc`)
+   - `✗` — did not attend (`#ffcfc9`)
+   - `OS` — out station (still counted as attended; `#bfe1f6`)
+   - `MC` — medical leave (`#ffe5a0`)
+   - `PH` — public holiday (`#e6cff2`)
 4. Leave the cell blank when no meeting status should be recorded.
 5. Run Sync after changing employee names, employee order, or meeting flags.
 
@@ -45,7 +45,12 @@ Sync rebuilds the MEETING attendance layout from `CONFIG`:
 - A new employee receives a blank MEETING column.
 - An employee changed from `YES` to another flag falls out of the active layout;
   that column's displayed header and attendance data are cleared.
-- Dropdown validation is reapplied to all available MEETING column positions.
+- Dropdown validation is applied to all available MEETING column positions and
+  existing matching rules are preserved.
+
+**Reset Manual Changes** sets `✓` for active employee columns on rows with a
+date in column A. It clears attendance cells on rows without dates and in
+unused employee columns while keeping their dropdowns.
 
 ## Side notes: changes to the whole workbook
 

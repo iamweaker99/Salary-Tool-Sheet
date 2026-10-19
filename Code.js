@@ -395,6 +395,7 @@ function resetManualChanges() {
   const config = SS.getSheetByName("CONFIG");
   const inSheet = SS.getSheetByName("IN");
   const out = SS.getSheetByName("OUT");
+  const meeting = SS.getSheetByName("MEETING");
   if (!config || !inSheet || !out) {
     throw new Error("RESET ABORTED: CONFIG / IN / OUT sheet missing.");
   }
@@ -423,6 +424,23 @@ function resetManualChanges() {
         range.getSheet().getName() + "'. No changes made.");
     }
   });
+
+  let meetingReset = null;
+  if (meeting) {
+    const meetingColCount = Math.min(MEETING_CAPACITY_COLS, meeting.getMaxColumns() - 1);
+    if (meetingColCount > 0) {
+      const meetingRange = meeting.getRange(2, 2, DATA_LAST_ROW - 1, meetingColCount);
+      if (!meetingRange.canEdit()) {
+        throw new Error("RESET ABORTED: cannot edit MEETING attendance cells. No changes made.");
+      }
+      const headers = meeting.getRange(1, 2, 1, meetingColCount).getValues()[0];
+      const dates = meeting.getRange(2, 1, DATA_LAST_ROW - 1, 1).getValues();
+      const values = dates.map(([date]) => headers.map(header =>
+        date !== "" && date !== null && header !== "" && header !== null &&
+          String(header).trim() !== "" ? "✓" : ""));
+      meetingReset = { range: meetingRange, values };
+    }
+  }
 
   const checkboxRanges = [inSheet, out].map(sheet => {
     const daily = sheet.getRange(2, 2, DATA_LAST_ROW - 1, sheet.getMaxColumns() - 1);
@@ -461,6 +479,7 @@ function resetManualChanges() {
       });
     }
   });
+  if (meetingReset) meetingReset.range.setValues(meetingReset.values);
   if (restCells.length > 0) out.getRangeList(restCells).clearContent();
   colourRanges.forEach(range => {
     range.setFontColor(null);
@@ -472,7 +491,7 @@ function resetManualChanges() {
   SpreadsheetApp.flush();
   return "RESET OK: manual colours reset on " + colourRanges.length +
     " sheet(s), manual IN/OUT checkboxes unticked, and " + employeeNames.length +
-    " rest-control column(s) cleared.";
+    " rest-control column(s) cleared" + (meetingReset ? ", MEETING attendance reset." : ".");
 }
 
 /**
@@ -679,11 +698,24 @@ function rewriteMeetingLayout(sheet, meetingNames, renameMap) {
  */
 function applyMeetingAttendanceValidation(sheet, col) {
   const data = sheet.getRange(2, col, DATA_LAST_ROW - 1, 1);
-  const attendance = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['✓', '✗', 'OS', 'MC', 'PH'], true)
-    .setAllowInvalid(false)
-    .build();
-  data.setDataValidation(attendance);
+  const options = ['✓', '✗', 'OS', 'MC', 'PH'];
+  const currentRules = data.getDataValidations();
+  const optionsMatch = currentRules.every(row => {
+    const rule = row[0];
+    if (!rule || rule.getCriteriaType() !== SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST) {
+      return false;
+    }
+    const currentOptions = rule.getCriteriaValues()[0];
+    return currentOptions.length === options.length &&
+      options.every((option, index) => currentOptions[index] === option);
+  });
+  if (!optionsMatch) {
+    const attendance = SpreadsheetApp.newDataValidation()
+      .requireValueInList(options, true)
+      .setAllowInvalid(false)
+      .build();
+    data.setDataValidation(attendance);
+  }
   sheet.getRange(1, col).setDataValidation(null); // header too (spill belt-and-braces)
 }
 
