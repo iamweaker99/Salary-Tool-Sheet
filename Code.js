@@ -396,8 +396,9 @@ function resetRestOverrides() {
 
 /**
  * Resets direct colours below headers on IN, OUT, and CONFIG employee tabs.
- * Clears active OUT rest overrides and unticks literal IN/OUT checkboxes only.
- * Formulas, conditional formatting, other styling, and protections are kept.
+ * Clears named IN/OUT employee time columns and active OUT rest overrides,
+ * unticks literal checkboxes, and resets MEETING attendance.
+ * Date formulas, conditional formatting, other styling, and protections are kept.
  */
 function resetManualChanges() {
   const config = SS.getSheetByName("CONFIG");
@@ -474,6 +475,17 @@ function resetManualChanges() {
     return { sheet, cells };
   });
 
+  const timeRanges = [inSheet, out].map(sheet => {
+    const headers = sheet.getRange(1, 2, 1, sheet.getMaxColumns() - 1).getValues()[0];
+    const cells = [];
+    for (let c = 0; c < headers.length - 1; c += 2) {
+      if (String(headers[c]).trim() !== "") {
+        cells.push(sheet.getRange(2, c + 2, DATA_LAST_ROW - 1, 1).getA1Notation());
+      }
+    }
+    return { sheet, cells };
+  });
+
   const restCells = [];
   employeeNames.forEach((name, index) => {
     const controlColumn = 3 + index * 2; // C, E, ..., alternating after checkout
@@ -487,6 +499,9 @@ function resetManualChanges() {
       });
     }
   });
+  timeRanges.forEach(({ sheet, cells }) => {
+    if (cells.length > 0) sheet.getRangeList(cells).clearContent();
+  });
   if (meetingReset) meetingReset.range.setValues(meetingReset.values);
   if (restCells.length > 0) out.getRangeList(restCells).clearContent();
   colourRanges.forEach(range => {
@@ -498,7 +513,7 @@ function resetManualChanges() {
   });
   SpreadsheetApp.flush();
   return "RESET OK: manual colours reset on " + colourRanges.length +
-    " sheet(s), manual IN/OUT checkboxes unticked, and " + employeeNames.length +
+    " sheet(s), IN/OUT employee time entries cleared, manual IN/OUT checkboxes unticked, and " + employeeNames.length +
     " rest-control column(s) cleared" + (meetingReset ? ", MEETING attendance reset." : ".");
 }
 
