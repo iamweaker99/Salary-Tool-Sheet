@@ -48,7 +48,7 @@ Sync rebuilds the MEETING attendance layout from `CONFIG`:
 - Dropdown validation is applied to all available MEETING column positions and
   existing matching rules are preserved.
 
-**Reset Manual Changes** sets `✓` for active employee columns on rows with a
+**Remove data** sets `✓` for active employee columns on rows with a
 date in column A. It clears attendance cells on rows without dates and in
 unused employee columns while keeping their dropdowns.
 

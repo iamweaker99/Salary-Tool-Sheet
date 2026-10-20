@@ -60,8 +60,9 @@ function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('Salary Tool')
     .addItem('Sync Employee Tabs', 'syncEmployeeTabsFromMenu')
-    .addItem('Reset Manual Changes', 'resetManualChangesFromMenu')
-    .addItem('Reset Manual Changes (Office)', 'resetOfficeManualChangesFromMenu')
+    .addItem('Remove data', 'removeDataFromMenu')
+    .addItem('Remove formatting, checkbox & dropdown', 'resetManualChangesFromMenu')
+    .addItem('Remove data & formatting (Office)', 'resetOfficeManualChangesFromMenu')
     .addSeparator()
     .addItem('Protect All Tabs', 'protectAllTabs')
     .addItem('Unprotect All Tabs', 'unprotectAllTabs')
@@ -379,14 +380,39 @@ function quoteFormulaString(value) {
   return '"' + escapeFormulaString(value) + '"';
 }
 
-/** Runs the combined reset from the menu and displays its result. */
-function resetManualChangesFromMenu() {
-  SpreadsheetApp.getUi().alert(resetManualChanges());
+/** Confirms the data cleanup before changing any attendance inputs. */
+function removeDataFromMenu() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert('Remove data',
+    '• IN/OUT: Clear all employee time entries (rows 2–32), including numbers, text, and X markers.\n' +
+    '• MEETING: Set attendance to ✓ where an employee header and date exist; clear other attendance cells.\n\n' +
+    'Continue?', ui.ButtonSet.OK_CANCEL);
+  if (response !== ui.Button.OK) return;
+  ui.alert(removeData());
 }
 
-/** Runs the office reset from the menu and displays its result. */
+/** Confirms the colour and control reset before making changes. */
+function resetManualChangesFromMenu() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert('Remove formatting, checkbox & dropdown',
+    '• Regular employee sheets: Reset font and background colours below the header.\n' +
+    '• IN/OUT: Reset font and background colours below the header, including date-column formatting.\n' +
+    '• IN: Uncheck checkboxes; preserve checkbox controls and formulas.\n' +
+    '• OUT: Clear active employees’ dropdown selections; preserve dropdown controls and formulas.\n\n' +
+    'Continue?', ui.ButtonSet.OK_CANCEL);
+  if (response !== ui.Button.OK) return;
+  ui.alert(resetManualChanges());
+}
+
+/** Confirms the office reset before making changes. */
 function resetOfficeManualChangesFromMenu() {
-  SpreadsheetApp.getUi().alert(resetOfficeManualChanges());
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert('Remove data & formatting (Office)',
+    '• Office employee sheets: Clear manual entries in B2:G32 and M2:M32; preserve formulas.\n' +
+    '• Office employee sheets: Reset font and background colours across the entire sheet.\n\n' +
+    'Continue?', ui.ButtonSet.OK_CANCEL);
+  if (response !== ui.Button.OK) return;
+  ui.alert(resetOfficeManualChanges());
 }
 
 /** Preserves existing drawing/script assignments to the original reset action. */
@@ -395,16 +421,69 @@ function resetRestOverrides() {
 }
 
 /**
+ * Clears named IN/OUT employee time columns and resets MEETING attendance.
+ * Colours, checkboxes, OUT rest controls, and date formulas are kept.
+ */
+function removeData() {
+  const inSheet = SS.getSheetByName("IN");
+  const out = SS.getSheetByName("OUT");
+  const meeting = SS.getSheetByName("MEETING");
+  if (!inSheet || !out) {
+    throw new Error("REMOVE DATA ABORTED: IN / OUT sheet missing.");
+  }
+
+  const timeRanges = [inSheet, out].map(sheet => {
+    const headers = sheet.getRange(1, 2, 1, sheet.getMaxColumns() - 1).getValues()[0];
+    const cells = [];
+    for (let c = 0; c < headers.length - 1; c += 2) {
+      if (String(headers[c]).trim() !== "") {
+        const range = sheet.getRange(2, c + 2, DATA_LAST_ROW - 1, 1);
+        if (!range.canEdit()) {
+          throw new Error("REMOVE DATA ABORTED: cannot edit employee time cells on '" +
+            sheet.getName() + "'. No changes made.");
+        }
+        cells.push(range.getA1Notation());
+      }
+    }
+    return { sheet, cells };
+  });
+
+  let meetingReset = null;
+  if (meeting) {
+    const meetingColCount = Math.min(MEETING_CAPACITY_COLS, meeting.getMaxColumns() - 1);
+    if (meetingColCount > 0) {
+      const meetingRange = meeting.getRange(2, 2, DATA_LAST_ROW - 1, meetingColCount);
+      if (!meetingRange.canEdit()) {
+        throw new Error("REMOVE DATA ABORTED: cannot edit MEETING attendance cells. No changes made.");
+      }
+      const headers = meeting.getRange(1, 2, 1, meetingColCount).getValues()[0];
+      const dates = meeting.getRange(2, 1, DATA_LAST_ROW - 1, 1).getValues();
+      const values = dates.map(([date]) => headers.map(header =>
+        date !== "" && date !== null && header !== "" && header !== null &&
+          String(header).trim() !== "" ? "✓" : ""));
+      meetingReset = { range: meetingRange, values };
+    }
+  }
+
+  // All target permissions have been checked before the first write.
+  timeRanges.forEach(({ sheet, cells }) => {
+    if (cells.length > 0) sheet.getRangeList(cells).clearContent();
+  });
+  if (meetingReset) meetingReset.range.setValues(meetingReset.values);
+  SpreadsheetApp.flush();
+  return "REMOVE DATA OK: IN/OUT employee time entries cleared" +
+    (meetingReset ? ", MEETING attendance reset." : ".");
+}
+
+/**
  * Resets direct colours below headers on IN, OUT, and CONFIG employee tabs.
- * Clears named IN/OUT employee time columns and active OUT rest overrides,
- * unticks literal checkboxes, and resets MEETING attendance.
- * Date formulas, conditional formatting, other styling, and protections are kept.
+ * Unticks literal IN checkboxes and clears active OUT rest overrides.
+ * Employee time entries, MEETING attendance, and formulas are kept.
  */
 function resetManualChanges() {
   const config = SS.getSheetByName("CONFIG");
   const inSheet = SS.getSheetByName("IN");
   const out = SS.getSheetByName("OUT");
-  const meeting = SS.getSheetByName("MEETING");
   if (!config || !inSheet || !out) {
     throw new Error("RESET ABORTED: CONFIG / IN / OUT sheet missing.");
   }
@@ -434,24 +513,7 @@ function resetManualChanges() {
     }
   });
 
-  let meetingReset = null;
-  if (meeting) {
-    const meetingColCount = Math.min(MEETING_CAPACITY_COLS, meeting.getMaxColumns() - 1);
-    if (meetingColCount > 0) {
-      const meetingRange = meeting.getRange(2, 2, DATA_LAST_ROW - 1, meetingColCount);
-      if (!meetingRange.canEdit()) {
-        throw new Error("RESET ABORTED: cannot edit MEETING attendance cells. No changes made.");
-      }
-      const headers = meeting.getRange(1, 2, 1, meetingColCount).getValues()[0];
-      const dates = meeting.getRange(2, 1, DATA_LAST_ROW - 1, 1).getValues();
-      const values = dates.map(([date]) => headers.map(header =>
-        date !== "" && date !== null && header !== "" && header !== null &&
-          String(header).trim() !== "" ? "✓" : ""));
-      meetingReset = { range: meetingRange, values };
-    }
-  }
-
-  const checkboxRanges = [inSheet, out].map(sheet => {
+  const checkboxRanges = [inSheet].map(sheet => {
     const daily = sheet.getRange(2, 2, DATA_LAST_ROW - 1, sheet.getMaxColumns() - 1);
     const formulas = daily.getFormulas();
     const validations = daily.getDataValidations();
@@ -475,17 +537,6 @@ function resetManualChanges() {
     return { sheet, cells };
   });
 
-  const timeRanges = [inSheet, out].map(sheet => {
-    const headers = sheet.getRange(1, 2, 1, sheet.getMaxColumns() - 1).getValues()[0];
-    const cells = [];
-    for (let c = 0; c < headers.length - 1; c += 2) {
-      if (String(headers[c]).trim() !== "") {
-        cells.push(sheet.getRange(2, c + 2, DATA_LAST_ROW - 1, 1).getA1Notation());
-      }
-    }
-    return { sheet, cells };
-  });
-
   const restCells = [];
   employeeNames.forEach((name, index) => {
     const controlColumn = 3 + index * 2; // C, E, ..., alternating after checkout
@@ -499,10 +550,6 @@ function resetManualChanges() {
       });
     }
   });
-  timeRanges.forEach(({ sheet, cells }) => {
-    if (cells.length > 0) sheet.getRangeList(cells).clearContent();
-  });
-  if (meetingReset) meetingReset.range.setValues(meetingReset.values);
   if (restCells.length > 0) out.getRangeList(restCells).clearContent();
   colourRanges.forEach(range => {
     range.setFontColor(null);
@@ -513,8 +560,8 @@ function resetManualChanges() {
   });
   SpreadsheetApp.flush();
   return "RESET OK: manual colours reset on " + colourRanges.length +
-    " sheet(s), IN/OUT employee time entries cleared, manual IN/OUT checkboxes unticked, and " + employeeNames.length +
-    " rest-control column(s) cleared" + (meetingReset ? ", MEETING attendance reset." : ".");
+    " sheet(s), manual IN checkboxes unticked, and " + employeeNames.length +
+    " rest-control column(s) cleared.";
 }
 
 /**
